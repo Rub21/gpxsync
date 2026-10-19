@@ -1,3 +1,4 @@
+from array import array
 from datetime import datetime, timezone
 
 from gpxsync.loader import Loader
@@ -18,7 +19,10 @@ def trace(id, **attrs):
         lat=-12.05,
         lon=-77.04,
         tags=["bike"],
-        segments=[[[-77.04, -12.05, 10.5, 1.0], [-77.05, -12.06, 0.0, float("-inf")]], [[-77.06, -12.07, 0.0, 2.0]]],
+        segments=[
+            array("d", [-77.04, -12.05, 10.5, 1.0, -77.05, -12.06, 0.0, float("-inf")]),
+            array("d", [-77.06, -12.07, 0.0, 2.0]),
+        ],
     )
     values.update(attrs)
     return Trace(**values)

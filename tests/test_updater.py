@@ -65,6 +65,8 @@ def test_after_a_dump_starts_from_the_last_file_before_its_timestamp(fake_conn):
     assert applied == 3
     files = [re.search(r"\d+/\d+/\d+", u).group() for u in fetched if u.endswith(".osm.gz")]
     assert files == ["000/000/008", "000/000/009", "000/000/010"]
+    states = [p[0] for sql, p in conn.queries if sql.startswith("INSERT INTO replication_state")]
+    assert states == [7, 8, 9, 10], "the sequence found by bisection is stored, so it runs once"
 
 
 def test_without_state_needs_a_start(fake_conn):

@@ -3,6 +3,8 @@ trace in it are deleted, then the traces with content are written again with
 COPY. Applying a batch twice gives the same result."""
 
 import struct
+import sys
+from array import array
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -49,7 +51,7 @@ class Loader:
             self.copy("COPY trace_tags (gpx_id, tag) FROM STDIN", [(t.id, tag) for t in with_content for tag in t.tags])
             self.copy(
                 "COPY trace_segments (gpx_id, trackid, geom) FROM STDIN",
-                [(t.id, i, ewkb_hex(points)) for t in with_content for i, points in enumerate(t.segments) if points],
+                [(t.id, i, ewkb_hex(seg)) for t in with_content for i, seg in enumerate(t.segments) if len(seg)],
             )
         return len(traces)
 
@@ -66,9 +68,13 @@ class Loader:
                 copy.write_row(row)
 
 
-def ewkb_hex(points: list[list[float]]) -> str:
-    """EWKB, little endian, with SRID: binary keeps -inf in M as it is."""
-    if len(points) == 1:
-        return (struct.pack("<BII", 1, WKB_POINT_ZM, SRID) + struct.pack("<4d", *points[0])).hex()
-    flat = [v for p in points for v in p]
-    return (struct.pack("<BIII", 1, WKB_LINESTRING_ZM, SRID, len(points)) + struct.pack(f"<{len(flat)}d", *flat)).hex()
+def ewkb_hex(segment: array) -> str:
+    """EWKB, little endian, with SRID: binary keeps -inf in M as it is. The
+    segment is the flat array of the reader, 4 doubles per point."""
+    if sys.byteorder != "little":
+        segment = array("d", segment)
+        segment.byteswap()
+    count = len(segment) // 4
+    if count == 1:
+        return (struct.pack("<BII", 1, WKB_POINT_ZM, SRID) + segment.tobytes()).hex()
+    return (struct.pack("<BIII", 1, WKB_LINESTRING_ZM, SRID, count) + segment.tobytes()).hex()

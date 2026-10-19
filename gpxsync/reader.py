@@ -1,14 +1,17 @@
-"""Streams the <trace> elements of a dump or a replication file."""
+"""Streams the <trace> elements of a dump or a replication file with expat,
+an event parser: no tree is built, so a dump of any size reads in the
+memory of one trace."""
 
+from array import array
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import IO
-
-from lxml import etree
+from xml.parsers import expat
 
 from gpxsync.state import parse_time
 
 NO_TIME = float("-inf")
+CHUNK = 1 << 20
 
 
 @dataclass
@@ -25,9 +28,9 @@ class Trace:
     lat: float | None = None
     lon: float | None = None
     tags: list[str] = field(default_factory=list)
-    # One list per <trkseg>, each point [lon, lat, ele, time]; ele 0 and
-    # time -inf when the point has none, as gpx_tracks stores them.
-    segments: list[list[list[float]]] = field(default_factory=list)
+    # One array per <trkseg>: lon, lat, ele, time for each point, flat. ele is
+    # 0 and time -inf when the point has none, as gpx_tracks stores them.
+    segments: list[array] = field(default_factory=list)
 
     @property
     def content(self) -> bool:
@@ -36,59 +39,83 @@ class Trace:
 
 
 def read(io: IO[bytes]) -> tuple[dict[str, str], Iterator[Trace]]:
-    """The attributes of <osm> and an iterator over its traces. Each trace is
-    freed after it is yielded, so a dump of any size reads in little memory."""
-    parser = etree.iterparse(io, events=("start", "end"))
-    root: dict[str, str] = {}
+    """The attributes of <osm> and an iterator over its traces."""
+    handler = Handler()
+    parser = expat.ParserCreate()
+    parser.StartElementHandler = handler.start
+    parser.EndElementHandler = handler.end
+    parser.CharacterDataHandler = handler.characters
+    parser.buffer_text = True
 
     def traces() -> Iterator[Trace]:
-        for event, elem in parser:
-            if event == "start" and elem.tag == "osm":
-                root.update(elem.attrib)
-            elif event == "end" and elem.tag == "trace":
-                yield trace_of(elem)
-                elem.clear()
-                while elem.getprevious() is not None:
-                    del elem.getparent()[0]
+        while chunk := io.read(CHUNK):
+            parser.Parse(chunk, False)
+            yield from handler.done
+            handler.done.clear()
+        parser.Parse(b"", True)
+        yield from handler.done
+        handler.done.clear()
 
-    # Read up to the root so its attributes are known before the first trace.
-    event, elem = next(parser)
-    if elem.tag == "osm":
-        root.update(elem.attrib)
-    return root, traces()
+    # The root comes before the first trace, so one chunk is enough for its
+    # attributes; its traces are kept for the iterator.
+    parser.Parse(io.read(CHUNK), False)
+    return handler.root, traces()
 
 
-def trace_of(elem: etree._Element) -> Trace:
-    a = elem.attrib
-    trace = Trace(
-        id=int(a["id"]),
-        visible=a.get("visible") == "true",
-        visibility=a.get("visibility"),
-        uid=int(a["uid"]) if "uid" in a else None,
-        user=a.get("user"),
-        timestamp=a.get("timestamp"),
-        points=int(a["points"]) if "points" in a else None,
-        lat=float(a["lat"]) if "lat" in a else None,
-        lon=float(a["lon"]) if "lon" in a else None,
-    )
-    for child in elem:
-        if child.tag == "name":
-            trace.name = child.text
-        elif child.tag == "description":
-            trace.description = child.text
-        elif child.tag == "tag":
-            trace.tags.append(child.get("v"))
-        elif child.tag == "trk":
-            trace.segments = [[point_of(p) for p in seg.iter("trkpt")] for seg in child.iter("trkseg")]
-    return trace
+class Handler:
+    def __init__(self):
+        self.root: dict[str, str] = {}
+        self.done: list[Trace] = []
+        self.trace: Trace | None = None
+        self.segment: array | None = None
+        self.point: list[float] | None = None
+        self.text: list[str] | None = None
 
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        if name == "trkpt":
+            self.point = [float(attrs["lon"]), float(attrs["lat"]), 0.0, NO_TIME]
+        elif name in ("ele", "time", "name", "description"):
+            self.text = []
+        elif name == "trkseg":
+            self.segment = array("d")
+        elif name == "tag":
+            self.trace.tags.append(attrs["v"])
+        elif name == "trace":
+            self.trace = Trace(
+                id=int(attrs["id"]),
+                visible=attrs.get("visible") == "true",
+                visibility=attrs.get("visibility"),
+                uid=int(attrs["uid"]) if "uid" in attrs else None,
+                user=attrs.get("user"),
+                timestamp=attrs.get("timestamp"),
+                points=int(attrs["points"]) if "points" in attrs else None,
+                lat=float(attrs["lat"]) if "lat" in attrs else None,
+                lon=float(attrs["lon"]) if "lon" in attrs else None,
+            )
+        elif name == "osm":
+            self.root.update(attrs)
 
-def point_of(elem: etree._Element) -> list[float]:
-    ele = elem.find("ele")
-    time = elem.find("time")
-    return [
-        float(elem.get("lon")),
-        float(elem.get("lat")),
-        float(ele.text) if ele is not None else 0.0,
-        parse_time(time.text).timestamp() if time is not None else NO_TIME,
-    ]
+    def characters(self, data: str) -> None:
+        if self.text is not None:
+            self.text.append(data)
+
+    def end(self, name: str) -> None:
+        if name == "trkpt":
+            self.segment.extend(self.point)
+        elif name == "ele":
+            self.point[2] = float(self.take_text())
+        elif name == "time":
+            self.point[3] = parse_time(self.take_text()).timestamp()
+        elif name == "trkseg":
+            self.trace.segments.append(self.segment)
+        elif name == "name":
+            self.trace.name = self.take_text()
+        elif name == "description":
+            self.trace.description = self.take_text()
+        elif name == "trace":
+            self.done.append(self.trace)
+
+    def take_text(self) -> str:
+        text = "".join(self.text)
+        self.text = None
+        return text

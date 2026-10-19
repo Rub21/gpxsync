@@ -17,7 +17,7 @@ can also come from `$GPXSYNC_FEED_URL`.
 ## How it works
 
 `import` reads the file as a stream (`lxml` iterparse) and writes the traces
-with `COPY`, 500 per transaction. After a dump, the dump timestamp is stored.
+with `COPY`, 100 per transaction. After a dump, the dump timestamp is stored.
 
 `update` applies every feed file newer than the stored sequence, one
 transaction per file, storing the sequence after each one. Right after a

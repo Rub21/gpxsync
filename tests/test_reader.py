@@ -36,7 +36,8 @@ def test_reads_the_root_and_the_traces():
     assert t.description == "Lima & Callao"
     assert t.tags == ["bike"]
     assert len(t.segments) == 2
-    assert t.segments[0][0] == [-77.04, -12.05, 10.5, 1791878400.0]
-    assert t.segments[1][0][3] == NO_TIME
+    assert list(t.segments[0][:4]) == [-77.04, -12.05, 10.5, 1791878400.0]
+    assert len(t.segments[0]) == 8
+    assert t.segments[1][3] == NO_TIME
     assert not traces[1].visible
     assert not traces[1].content

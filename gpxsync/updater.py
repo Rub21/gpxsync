@@ -8,9 +8,9 @@ import io
 import logging
 from collections.abc import Callable
 from datetime import datetime
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
-from gpxsync import Error, schema
+from gpxsync import Error, __version__, schema
 from gpxsync.loader import Loader, Position
 from gpxsync.reader import read
 from gpxsync.state import State
@@ -19,7 +19,9 @@ log = logging.getLogger("gpxsync")
 
 
 def http_get(url: str) -> bytes:
-    with urlopen(url) as response:
+    # With its own User-Agent, as the OSM servers ask; the default one of
+    # urllib is refused by some proxies.
+    with urlopen(Request(url, headers={"User-Agent": f"gpxsync/{__version__}"})) as response:
         return response.read()
 
 
@@ -36,7 +38,10 @@ class Updater:
         schema.create(self.conn)
         loader = Loader(self.conn)
         remote = State.parse(self.text(self.url + "state.txt")).sequence
-        local = self.local_sequence(loader.state(), remote, start)
+        state = loader.state()
+        local = self.local_sequence(state, remote, start)
+        if state is not None and state.sequence is None:
+            loader.set_state(local, state.timestamp)  # the bisection runs once
         log.info("local sequence %d, feed sequence %d", local, remote)
 
         applied = 0

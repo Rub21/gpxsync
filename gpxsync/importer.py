@@ -13,7 +13,7 @@ from gpxsync.reader import read
 log = logging.getLogger("gpxsync")
 
 
-def run(conn, path: str, batch: int = 500) -> int:
+def run(conn, path: str, batch: int = 100) -> int:
     """Returns the number of traces applied."""
     schema.create(conn)
     loader = Loader(conn)
